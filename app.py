@@ -1,45 +1,51 @@
+# ==========================================
+# Variables Potentially Requiring Adjustment
+# ==========================================
+_fuzzy_white_value = 200 # Lowest RGB pixel value considered 'white'
+_fuzzy_noise_value = 1e8 # Maximum pixel area size used to filter scanned image noise
+# ==========================================
+
 import datetime, os, subprocess
 from threading import Thread
 
 from tkinter import filedialog
 from tkinter import *
 
-from PIL import Image
-import numpy as np
+from PIL import Image, ImageTk
 from scipy import ndimage
+import numpy as np
 
-NAPS2 = "C:\\Program Files\\NAPS2\\NAPS2.Console.exe"
+_expected_naps_path = 'C:\\Program Files\\NAPS2\\NAPS2.Console.exe'
+_ico_filename = 'img\\folder-30.png'
 
-FUZZY_WHITE_VALUE = 200
+_err  = '[ Error ]   '
+_info = '[ Info  ]   '
 
-ERR  = '[ Error ]   '
-INFO = '[ Info  ]   '
-
-APP = None
-LOGBOX = None
-SCAN_BTN = None
-OUTPUT_DIR_BTN = None
-
-OUTPUT_DIR = None
-IMG_THREAD = None
+# Globals- could clean this up
+_app = None
+_logbox = None
+_img_thread = None
+_scan_btn = None
+_output_dir = None
+_output_dir_btn = None
+_output_dir_btn_ico = None
 
 def scan_disabled(isdisabled):
-    global SCAN_BTN
-    global OUTPUT_DIR_BTN
+    global _scan_btn, _output_dir_btn
     if isdisabled:
-        SCAN_BTN.config(state=DISABLED)
-        OUTPUT_DIR_BTN.config(state=DISABLED)
+        _scan_btn.config(state=DISABLED)
+        _output_dir_btn.config(state=DISABLED)
     else:
-        SCAN_BTN.config(state=ACTIVE)
-        OUTPUT_DIR_BTN.config(state=ACTIVE)
+        _scan_btn.config(state=ACTIVE)
+        _output_dir_btn.config(state=ACTIVE)
 
 def log(type, text):
-    LOGBOX.insert(END, "{}{}\n".format(type, text))
+    _logbox.insert(END, "{}{}\n".format(type, text))
 
 def scan(filename):
     scan_disabled(True)
     command = [
-        NAPS2,
+        _expected_naps_path,
         "--progress",
         "--deskew",
         "-o", filename
@@ -49,7 +55,7 @@ def scan(filename):
 
     scan_disabled(False)
     if len(stderr) > 0:
-        log(ERR, stderr)
+        log(_err, stderr)
         return False
     else:
         return True
@@ -58,7 +64,7 @@ def process_image(filename):
     img = Image.open(filename)
 
     img = img.convert('RGB')
-    mask = img.convert("L").point(lambda p: p < FUZZY_WHITE_VALUE and 255)
+    mask = img.convert("L").point(lambda p: p < _fuzzy_white_value and 255)
     
     # Convert mask to numpy array for processing
     mask_array = np.array(mask)
@@ -69,100 +75,135 @@ def process_image(filename):
     
     # Calculate the areas of each component
     sizes = ndimage.sum(mask_array, labeled_array, range(num_features + 1))
-    
+
     # Find the label of the largest component
     largest_component_label = sizes.argmax()
+    largest_size = sizes[largest_component_label]
+
+    index = 1
+    while largest_size > _fuzzy_noise_value:    
+        # Create a new mask that only includes the largest component
+        largest_component_mask = (labeled_array == largest_component_label)
     
-    # Create a new mask that only includes the largest component
-    largest_component_mask = (labeled_array == largest_component_label)
+        # Get the bounding box of the largest component
+        coords = np.column_stack(np.where(largest_component_mask))
+        min_row, min_col = coords.min(axis=0)
+        max_row, max_col = coords.max(axis=0)
+        bbox = (min_col, min_row, max_col, max_row)
+
+        cropped_img = img.crop(bbox)
+        cropped_img.save("{}_cropped_{}.jpg".format(filename[:-4], index))
+
+        # Replace max size with 0 and get the next largest component
+        sizes[largest_component_label] = 0
+        largest_component_label = sizes.argmax()
+        largest_size = sizes[largest_component_label]
+
+        index += 1
     
-    # Get the bounding box of the largest component
-    coords = np.column_stack(np.where(largest_component_mask))
-    min_row, min_col = coords.min(axis=0)
-    max_row, max_col = coords.max(axis=0)
-    bbox = (min_col, min_row, max_col, max_row)
-    
-    cropped_img = img.crop(bbox)
-    cropped_img.save("{}_cropped.jpg".format(filename[:-4]))
+    return index - 1
 
 def process_image_thread(filename):
     if scan(filename):
-        process_image(filename)
-    log(INFO, "Image saved")
+        num_images = process_image(filename)
+        log(_info, "{} images saved".format(num_images))
 
 def scan_and_process():
-    global OUTPUT_DIR
-    if OUTPUT_DIR is None:
+    global _output_dir, _img_thread
+    if len(_output_dir.get()) == 0:
         if not setoutputdir():
-            log(ERR, 'You must set an output directory before running scan')
+            log(_err, 'You must set an output directory before running scan')
             return
 
     datetimestr = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    filename = os.path.join(OUTPUT_DIR, "scan_{}.jpg".format(datetimestr))
-    log(INFO, 'Scanning and processing image \"{}\". This will take a moment...'.format(filename))
+    filename = os.path.join(_output_dir.get(), "scan_{}.jpg".format(datetimestr))
+    log(_info, 'Scanning and processing image \"{}\". This will take a moment...'.format(filename))
 
     # Spin up thread to scan and process image
-    global IMG_THREAD
-    IMG_THREAD = Thread(target=process_image_thread, args=(filename,))
-    IMG_THREAD.start()
+    _img_thread = Thread(target=process_image_thread, args=(filename,))
+    _img_thread.start()
 
 def exitapp():
-    if IMG_THREAD is not None and IMG_THREAD.isAlive:
-        IMG_THREAD.join()
-    APP.destroy()
+    global _app, _img_thread
+    if _img_thread is not None and _img_thread.isAlive:
+        _img_thread.join()
+    _app.destroy()
 
 def setoutputdir():
-    global OUTPUT_DIR
-    OUTPUT_DIR = filedialog.askdirectory()
+    global _output_dir
+    _output_dir.set(filedialog.askdirectory())
 
-    if len(OUTPUT_DIR) > 0:
-        log(INFO, "Output directory set to {}".format(OUTPUT_DIR))
+    if len(_output_dir.get()) > 0:
+        log(_info, "Output directory set to {}".format(_output_dir.get()))
         return True
     else:
-        OUTPUT_DIR = None
         return False
 
 def buildapp():
-    root=Tk()
-    root.title('NAPS2 Assistant')
-    root.geometry('1500x400')
-    root.minsize(400,400)
-    
-    frame=Frame(root)
-    frame.pack(side=LEFT, expand=True, fill=BOTH)
+    global _app
+    global _logbox
+    global _scan_btn
+    global _output_dir
+    global _output_dir_btn
+    global _output_dir_btn_ico
 
-    canvas=Canvas(frame)
+    _app=Tk()
+    _app.title('NAPS2 Assistant')
+    _app.resizable= True
+    _app.minsize(width=1200, height=400)
+    
+    # Set up left frame
+    lframe=Frame(_app)
+    lframe.grid(row=0, column=0, sticky="nsew")
+
+    canvas=Canvas(lframe)
     canvas.pack(side=LEFT, expand=True, fill=BOTH)
 
     scrollbar = Scrollbar(canvas)
     scrollbar.pack(side=RIGHT, fill=Y)
 
-    logbox = Text(canvas, wrap=WORD, yscrollcommand=scrollbar.set)
-    logbox.bindtags((logbox, canvas, "all"))
+    _logbox = Text(canvas, wrap=WORD, yscrollcommand=scrollbar.set)
+    _logbox.bindtags((_logbox, canvas, "all"))
 
-    logbox.pack(side=LEFT, expand=True, fill=BOTH)
-    scrollbar.config(command=logbox.yview)
+    _logbox.pack(side=LEFT, expand=True, fill=BOTH)
+    scrollbar.config(command=_logbox.yview)
 
-    outputbutton = Button(frame, text='Set Output Folder', width=25, command=setoutputdir)
-    outputbutton.pack(side=TOP, padx=20, pady=10)
+    # Set up right frame
+    rframe=Frame(_app)
+    rframe.grid(row=0, column=1, sticky="nsew")
+    
+    # we need a global ref to this, otherwise it gets destroyed
+    _output_dir = StringVar(value="")
+    outputentry = Entry(rframe, textvariable=_output_dir)
+    outputentry.grid(row=1, column=0, columnspan=1, sticky="ew", pady=(10,0), padx=(10,5))
 
-    scanbutton = Button(frame, text='Scan', width=25, command=scan_and_process)
-    scanbutton.pack(side=TOP, padx=20)
+    ico_filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), _ico_filename)
+    ico = Image.open(ico_filepath)
+    ico_szd = ico.resize((14,14), Image.LANCZOS)
+    _output_dir_btn_ico = ImageTk.PhotoImage(ico_szd)
+    _output_dir_btn = Button(rframe, image=_output_dir_btn_ico, command=setoutputdir)
+    _output_dir_btn.grid(row=1, column=1, columnspan=1, sticky="ew", pady=(10,0), padx=(0,10), ipadx=1, ipady=1)
 
-    exitbutton = Button(frame, text='Exit', width=25, command=exitapp)
-    exitbutton.pack(side=TOP, padx=20, pady=10)
+    _scan_btn = Button(rframe, text='Scan', width=20, command=scan_and_process)
+    _scan_btn.grid(row=2, column=0, columnspan=2, sticky="e", padx=10, pady=(10,2))
 
-    return root,logbox,scanbutton,outputbutton
+    exitbutton = Button(rframe, text='Exit', width=20, command=exitapp)
+    exitbutton.grid(row=3, column=0, columnspan=2, sticky="e", padx=10)
+
+    rframe.columnconfigure(0, weight=1)
+
+    _app.rowconfigure(0, weight=1)
+    _app.columnconfigure(0, weight=1)
+    _app.columnconfigure(1, weight=1)
 
 if __name__ == '__main__':
     # Build GUI app, set up log box and scan button so we can reference these in other funcs
-    APP, LOGBOX, SCAN_BTN, OUTPUT_DIR_BTN = buildapp()
-
-    log(INFO, 'Welcome to the NAPS2 Assistant! Please install NAPS2 and set up your scanner to continue. Scan images one at a time using the \"Scan\" button on the right. Images will automatically be rotated and cropped.')
+    buildapp()
+    log(_info, 'Welcome to the NAPS2 Assistant! Please install NAPS2 and set up your scanner to continue. Scan images one at a time using the \"Scan\" button on the right. Images will automatically be rotated and cropped.')
 
     # Try to find NAPS2
-    if not os.path.exists(NAPS2):
-        log(ERR, 'Unable to find NAPS2 at \"{}\". Try installing, then run again.'.format(NAPS2))
+    if not os.path.exists(_expected_naps_path):
+        log(_err, 'Unable to find NAPS2 at \"{}\". Try installing, then run again.'.format(_expected_naps_path))
         scan_disabled(True)
     
     # Run gui
