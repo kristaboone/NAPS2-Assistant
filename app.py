@@ -10,6 +10,8 @@ from scipy import ndimage
 
 NAPS2 = "C:\\Program Files\\NAPS2\\NAPS2.Console.exe"
 
+FUZZY_WHITE_VALUE = 200
+
 ERR  = '[ Error ]   '
 INFO = '[ Info  ]   '
 
@@ -56,7 +58,7 @@ def process_image(filename):
     img = Image.open(filename)
 
     img = img.convert('RGB')
-    mask = img.convert("L").point(lambda p: p < 200 and 255)
+    mask = img.convert("L").point(lambda p: p < FUZZY_WHITE_VALUE and 255)
     
     # Convert mask to numpy array for processing
     mask_array = np.array(mask)
